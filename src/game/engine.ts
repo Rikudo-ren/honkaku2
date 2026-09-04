@@ -1466,11 +1466,23 @@ export class Battle {
   }
 
   // ───────────────────────── AI ─────────────────────────
+  /** 通常攻撃の実効リーチ（box + 少しのマージン）。これより遠いと空振り確定なので撃たない */
+  private aiLightReach(f: Fighter): number {
+    const b = f.def.moves.light.box;
+    return b ? b.x + b.w + 6 : 24;
+  }
+  private aiHeavyReach(f: Fighter): number {
+    const m = f.def.moves.heavy;
+    const b = m.box;
+    const base = b ? b.x + b.w + 4 : 28;
+    return base + (m.moveX ?? 0) * 2.5;
+  }
+
   private aiInput(s: Side): InputState {
     const f = this.f[s];
     const o = this.f[s === 0 ? 1 : 0];
     const ai = f.ai!;
-    // 数理零は常にエリート脳。偏差値が高いほど反応フレームが詰まる
+    // 数理零は常にエリート脳
     if (f.id === 'rei') {
       const react =
         this.opts.difficulty === 'extreme' ? 1 : this.opts.difficulty === 'hard' ? 1 : this.opts.difficulty === 'normal' ? 2 : 3;
@@ -1479,92 +1491,239 @@ export class Battle {
       ai.held = inp;
       return inp;
     }
-    const cfg = {
-      easy: { every: 22, block: 0.12, agg: 0.45, special: 0.25, super: 0.35, proj: 0.4 },
-      normal: { every: 13, block: 0.35, agg: 0.7, special: 0.4, super: 0.6, proj: 0.55 },
-      hard: { every: 5, block: 0.88, agg: 0.92, special: 0.62, super: 0.9, proj: 0.82 },
-      extreme: { every: 3, block: 0.97, agg: 0.97, special: 0.78, super: 0.98, proj: 0.95 },
-    }[this.opts.difficulty];
+    // 通常AIもフレーム単位で優先順位判断（旧planシステムは廃止）
+    return this.generalBrain(s);
+  }
+
+  /**
+   * 通常キャラ用AI。毎フレーム優先度で判断する。
+   * - ガード・飛び道具回避を最優先（難易度で反応率を変える）
+   * - 攻撃はリーチ内にいるときだけ撃つ（空振りスパム禁止）
+   * - 相手の硬直・起き上がりをちゃんと罰する
+   */
+  private generalBrain(s: Side): InputState {
     const inp: InputState = { ...EMPTY_INPUT };
+    const f = this.f[s];
+    const o = this.f[s === 0 ? 1 : 0];
+    if (this.phase !== 'fight') return inp;
+
+    const busy =
+      f.state === 'attack' ||
+      f.state === 'hurt' ||
+      f.state === 'launch' ||
+      f.state === 'down' ||
+      f.state === 'getup' ||
+      f.state === 'stun' ||
+      f.state === 'frozen' ||
+      f.state === 'grabbed' ||
+      f.state === 'super' ||
+      f.state === 'win' ||
+      f.state === 'lose';
+    if (busy) return inp;
+
+    const grounded = f.y >= GROUND;
     const dist = Math.abs(o.x - f.x);
-    const fwd: Facing = o.x > f.x ? 1 : -1;
-    const oppAttacking = (o.state === 'attack' && o.move?.kind === 'melee') || (o.state === 'super' && o.id === 'mitsumine');
-    const projIncoming = this.projectiles.some((p) => p.owner !== s && !p.item && Math.sign(p.vx) === -fwd && Math.abs(p.x - f.x) < 90 && Math.abs(p.y - (f.y - 20)) < 40);
-    const oppDown = o.state === 'down' || o.state === 'getup';
-    const oppVulnerable = o.state === 'stun' || o.state === 'frozen' || (o.state === 'attack' && o.movePhase === 2);
-    // 高難易度はガードを毎フレーム優先（plan待ちにしない）
-    const hardish = this.opts.difficulty === 'hard' || this.opts.difficulty === 'extreme';
-    if (hardish && oppAttacking && dist < 58 && Math.random() < cfg.block) {
-      const backKey = fwd === 1 ? 'left' : 'right';
-      if (f.id === 'mie' && Math.random() < 0.45 && f.cooldown <= 0) {
+    const fwd: 'left' | 'right' = o.x > f.x ? 'right' : 'left';
+    const back: 'left' | 'right' = fwd === 'right' ? 'left' : 'right';
+    const d = this.opts.difficulty;
+
+    // 難易度パラメータ
+    const blockP =
+      d === 'extreme' ? 0.96 : d === 'hard' ? 0.88 : d === 'normal' ? 0.62 : 0.28;
+    const projP =
+      d === 'extreme' ? 0.92 : d === 'hard' ? 0.8 : d === 'normal' ? 0.55 : 0.3;
+    const agg =
+      d === 'extreme' ? 0.92 : d === 'hard' ? 0.82 : d === 'normal' ? 0.65 : 0.42;
+    const specialP =
+      d === 'extreme' ? 0.55 : d === 'hard' ? 0.4 : d === 'normal' ? 0.28 : 0.15;
+    const superP =
+      d === 'extreme' ? 0.95 : d === 'hard' ? 0.85 : d === 'normal' ? 0.6 : 0.35;
+
+    const lightR = this.aiLightReach(f);
+    const heavyR = this.aiHeavyReach(f);
+    const inLight = dist <= lightR + 2;
+    const inHeavy = dist <= heavyR + 2;
+
+    // ── 1. 超必殺（ダウン中は撃たない）──
+    if (
+      f.meter >= 100 &&
+      f.silence <= 0 &&
+      o.state !== 'down' &&
+      o.state !== 'getup' &&
+      dist < 160 &&
+      Math.random() < superP
+    ) {
+      inp.super = true;
+      return inp;
+    }
+
+    // ── 2. 飛び道具回避（毎フレーム）──
+    const proj = this.projectiles.find((p) => {
+      if (p.owner === s || p.item) return false;
+      const dx = f.x - p.x;
+      const closing = p.homing === s || (p.vx !== 0 && Math.sign(p.vx) === Math.sign(dx));
+      return closing && Math.abs(dx) < 110 && Math.abs(p.y - (f.y - 22)) < 50;
+    });
+    if (proj && grounded && Math.random() < projP) {
+      // 三重は当身で跳ね返す
+      if (f.id === 'mie' && f.cooldown <= 0 && f.silence <= 0 && Math.random() < 0.65) {
         inp.special = true;
-      } else {
-        inp[backKey] = true;
+        return inp;
       }
-      return inp;
-    }
-    if (hardish && projIncoming && Math.random() < cfg.proj) {
-      if (f.id === 'mie' && f.cooldown <= 0 && Math.random() < 0.7) inp.special = true;
-      else {
+      if (proj.ground) {
         inp.up = true;
-        if (Math.random() < 0.4) inp[fwd === 1 ? 'right' : 'left'] = true;
+        inp[fwd] = true;
+      } else {
+        inp.up = true;
+        if (Math.random() < 0.5) inp[fwd] = true;
       }
       return inp;
     }
-    ai.nextDecision--;
-    if (ai.nextDecision <= 0) {
-      ai.nextDecision = cfg.every + Math.random() * (cfg.every * 0.6);
-      ai.planT = 0;
-      const r = Math.random();
-      if (f.meter >= 100 && f.silence <= 0 && dist < 150 && r < cfg.super && !oppDown) ai.plan = 'super';
-      else if (oppAttacking && dist < 60 && Math.random() < cfg.block) ai.plan = f.id === 'mie' && Math.random() < 0.5 && f.cooldown <= 0 ? 'special' : 'block';
-      else if (projIncoming && Math.random() < cfg.proj) ai.plan = f.id === 'mie' && f.cooldown <= 0 && Math.random() < 0.6 ? 'special' : 'jump';
-      else if (oppDown) ai.plan = dist > 50 ? 'approach' : Math.random() < 0.5 ? 'wait' : 'retreat';
-      else if (dist > 120) ai.plan = Math.random() < cfg.special && this.aiCanSpecial(f, dist, oppAttacking, projIncoming) ? 'special' : Math.random() < 0.2 ? 'jumpIn' : 'approach';
-      else if (dist < 38) {
-        const q = Math.random();
-        if (oppVulnerable) ai.plan = q < 0.65 ? 'heavy' : 'light';
-        else ai.plan = q < 0.4 * cfg.agg + 0.12 ? 'light' : q < 0.72 ? 'heavy' : q < 0.84 ? 'retreat' : q < 0.92 ? 'jumpIn' : 'wait';
-      } else ai.plan = Math.random() < 0.15 ? 'jumpIn' : Math.random() < 0.16 && this.aiCanSpecial(f, dist, oppAttacking, projIncoming) ? 'special' : 'approach';
+
+    // ── 3. ガード（相手の打撃発生・アクティブ中を優先）──
+    const oMelee =
+      o.state === 'attack' &&
+      !!o.move &&
+      o.move.kind === 'melee' &&
+      (o.movePhase === 0 || o.movePhase === 1);
+    const oGrabThreat = o.state === 'super' && o.id === 'mitsumine' && dist < 85;
+    const jumpInThreat = o.y < GROUND - 8 && dist < 55 && o.vy > -1.5;
+    const threat = (oMelee && dist < 62 && Math.abs(o.y - f.y) < 40) || oGrabThreat || jumpInThreat;
+
+    if (threat && grounded) {
+      if (Math.random() < blockP) {
+        // 三重は当身優先
+        if (f.id === 'mie' && f.cooldown <= 0 && f.silence <= 0 && Math.random() < 0.5) {
+          inp.special = true;
+        } else {
+          inp[back] = true;
+        }
+        return inp;
+      }
+      // ガード失敗時は何もしない（被弾）か、低確率でジャンプ避け
+      if (Math.random() < 0.15) {
+        inp.up = true;
+        return inp;
+      }
     }
-    ai.planT++;
-    const fwdKey = fwd === 1 ? 'right' : 'left';
-    const backKey = fwd === 1 ? 'left' : 'right';
-    switch (ai.plan) {
-      case 'approach':
-        inp[fwdKey] = true;
-        break;
-      case 'retreat':
-      case 'block':
-        inp[backKey] = true;
-        break;
-      case 'jump':
-        inp.up = ai.planT === 1;
-        inp.light = ai.planT === 14;
-        break;
-      case 'jumpIn':
-        inp.up = ai.planT === 1;
-        inp[fwdKey] = true;
-        inp.heavy = ai.planT === 16;
-        break;
-      case 'light':
-        inp.light = ai.planT === 1;
-        if (ai.planT > 4) ai.nextDecision = Math.min(ai.nextDecision, 4);
-        break;
-      case 'heavy':
-        inp.heavy = ai.planT === 1;
-        if (ai.planT > 4) ai.nextDecision = Math.min(ai.nextDecision, 6);
-        break;
-      case 'special':
-        inp.special = ai.planT === 1;
-        if (ai.planT > 4) ai.nextDecision = Math.min(ai.nextDecision, 6);
-        break;
-      case 'super':
-        inp.super = ai.planT === 1;
-        if (ai.planT > 2) ai.nextDecision = Math.min(ai.nextDecision, 4);
-        break;
-      case 'wait':
-        break;
+
+    // ── 4. カウンター立ち（三重の「は？」）には触らない ──
+    if (o.countering) {
+      if (dist < 70) inp[back] = true;
+      else if (f.cooldown <= 0 && dist < 110 && this.aiCanSpecial(f, dist, false, !!proj) && Math.random() < 0.35) {
+        inp.special = true;
+      } else inp[fwd] = true;
+      return inp;
+    }
+
+    // ── 5. パニッシュ：硬直・ヒット中・空振り ──
+    const oWhiff = o.state === 'attack' && o.movePhase === 2;
+    const oVuln =
+      oWhiff ||
+      o.state === 'stun' ||
+      o.state === 'frozen' ||
+      (o.state === 'hurt' && o.stateT > 2);
+
+    if (oVuln && grounded) {
+      if (dist > heavyR + 4) {
+        inp[fwd] = true;
+      } else if (inHeavy && Math.random() < 0.7) {
+        inp.heavy = true;
+      } else if (inLight) {
+        inp.light = true;
+      } else {
+        inp[fwd] = true;
+      }
+      return inp;
+    }
+
+    // ── 6. 対空 ──
+    if (o.y < GROUND - 10 && dist < 52 && o.vy > -1.2 && grounded && inHeavy) {
+      inp.heavy = true;
+      return inp;
+    }
+
+    // ── 7. 起き攻め / ダウン待ち ──
+    if (o.state === 'getup' && grounded) {
+      if (dist > 48) inp[fwd] = true;
+      else if (o.stateT >= 6 && inHeavy) inp.heavy = true;
+      else if (o.stateT >= 6 && inLight) inp.light = true;
+      else inp[back] = true;
+      return inp;
+    }
+    if (o.state === 'down') {
+      if (dist > 55) inp[fwd] = true;
+      else if (dist < 30) inp[back] = true;
+      // 適度な距離で待つ（起き上がりを狙う）
+      return inp;
+    }
+
+    // ── 8. 遠距離：接近 or 飛び道具・必殺 ──
+    if (dist > 100) {
+      if (
+        this.aiCanSpecial(f, dist, false, !!proj) &&
+        Math.random() < specialP * 0.7
+      ) {
+        inp.special = true;
+        return inp;
+      }
+      if (Math.random() < 0.08) {
+        inp.up = true;
+        inp[fwd] = true;
+      } else {
+        inp[fwd] = true;
+      }
+      return inp;
+    }
+
+    // ── 9. 中距離：接近してリーチ内に入る、たまに必殺 ──
+    if (dist > heavyR + 6) {
+      if (
+        this.aiCanSpecial(f, dist, false, !!proj) &&
+        Math.random() < specialP * 0.35
+      ) {
+        inp.special = true;
+        return inp;
+      }
+      if (Math.random() < 0.1) {
+        inp.up = true;
+        inp[fwd] = true;
+      } else {
+        inp[fwd] = true;
+      }
+      return inp;
+    }
+
+    // ── 10. 攻撃距離内：リーチを見てから撃つ（ここが一番重要）──
+    // 近すぎるときは軽攻撃 or 下がる
+    if (dist < 18) {
+      if (Math.random() < 0.35) {
+        inp[back] = true;
+      } else if (Math.random() < agg) {
+        inp.light = true;
+      } else {
+        inp[back] = true;
+      }
+      return inp;
+    }
+
+    // リーチ内なら攻撃、外なら歩いて詰める
+    const r = Math.random();
+    if (inHeavy && r < agg * 0.55) {
+      inp.heavy = true;
+    } else if (inLight && r < agg * 0.85) {
+      inp.light = true;
+    } else if (
+      this.aiCanSpecial(f, dist, false, !!proj) &&
+      r < agg * 0.95 &&
+      Math.random() < specialP
+    ) {
+      inp.special = true;
+    } else if (r < 0.55) {
+      // 少し下がって間合いを整える
+      inp[back] = true;
+    } else {
+      inp[fwd] = true;
     }
     return inp;
   }
@@ -1572,8 +1731,6 @@ export class Battle {
   /**
    * 数理零 専用エリートAI（プレイスキルカンスト）。
    * 差し返し・対空・置き身逃げ・起こし攻め・コンボルートをフレーム単位で判断する。
-   * 偏差値85/100ではガード・反応・間合い管理がほぼ完璧。
-   * 「面白いデータが出たので見てください」──勝率がそのデータである。
    */
   private reiBrain(s: Side): InputState {
     const inp: InputState = { ...EMPTY_INPUT };
@@ -1581,7 +1738,17 @@ export class Battle {
     const o = this.f[s === 0 ? 1 : 0];
     if (this.phase !== 'fight') return inp;
     const busy =
-      f.state === 'attack' || f.state === 'hurt' || f.state === 'launch' || f.state === 'down' || f.state === 'getup' || f.state === 'stun' || f.state === 'frozen' || f.state === 'grabbed' || f.state === 'super' || f.state === 'win' || f.state === 'lose';
+      f.state === 'attack' ||
+      f.state === 'hurt' ||
+      f.state === 'launch' ||
+      f.state === 'down' ||
+      f.state === 'getup' ||
+      f.state === 'stun' ||
+      f.state === 'frozen' ||
+      f.state === 'grabbed' ||
+      f.state === 'super' ||
+      f.state === 'win' ||
+      f.state === 'lose';
     if (busy) return inp;
     const grounded = f.y >= GROUND;
     const dist = Math.abs(o.x - f.x);
@@ -1592,7 +1759,10 @@ export class Battle {
     const teleP = d === 'extreme' ? 0.38 : d === 'hard' ? 0.3 : 0.22;
     const pokeHeavy = d === 'extreme' || d === 'hard' ? 0.72 : 0.55;
 
-    // 超必殺：ゲージが溜まった瞬間に起動（ダウン中の相手には撃たない＝無駄撃ちしない）
+    const lightR = this.aiLightReach(f);
+    const heavyR = this.aiHeavyReach(f);
+
+    // 超必殺：ゲージが溜まった瞬間に起動（ダウン中の相手には撃たない）
     if (f.meter >= 100 && f.silence <= 0 && o.state !== 'down' && o.state !== 'getup' && dist < 185) {
       inp.super = true;
       return inp;
@@ -1602,14 +1772,14 @@ export class Battle {
       inp.special = true;
       return inp;
     }
-    // 三重の「は？」構えには絶対に触らない（間合い管理）
+    // 三重の「は？」構えには絶対に触らない
     if (o.countering) {
       if (dist < 68) inp[back] = true;
       else if (f.cooldown <= 0 && dist < 100 && Math.random() < 0.4) inp.special = true;
       else inp[fwd] = true;
       return inp;
     }
-    // 飛び道具対処：地上を這うものは跳び越え、宙を来るものはテレポートかジャンプ
+    // 飛び道具対処
     const proj = this.projectiles.find((p) => {
       if (p.owner === s || p.item) return false;
       const dx = f.x - p.x;
@@ -1627,39 +1797,43 @@ export class Battle {
       }
       return inp;
     }
-    // 防御：相手の打撃発生を読み切ってガード、時々テレポート懲罰に切り替え（高難易度はほぼ必ずガード）
+    // 防御：相手の打撃発生を読み切ってガード
     const oMelee = o.state === 'attack' && !!o.move && o.move.kind === 'melee';
-    const oThreat = (oMelee && dist < 56 && Math.abs(o.y - f.y) < 36) || (o.y < GROUND - 8 && dist < 58 && o.vy > -1.2);
+    const oThreat =
+      (oMelee && dist < 56 && Math.abs(o.y - f.y) < 36) ||
+      (o.y < GROUND - 8 && dist < 58 && o.vy > -1.2);
     if (oThreat && grounded) {
-      if (Math.random() > blockP) return inp; // ごく稀に被弾（extremeはほぼ無し）
+      if (Math.random() > blockP) return inp;
       if (f.cooldown <= 0 && Math.random() < teleP) inp.special = true;
       else inp[back] = true;
       return inp;
     }
-    // punish：相手のヒットストップ明けにはPythonの間合いで最大リターン
+    // punish
     if (o.state === 'hurt' && dist < 46 && grounded) {
       if (o.stateT <= 6) inp.light = true;
-      else if (dist < 40) inp.heavy = true;
-      else inp.light = true;
+      else if (dist <= heavyR) inp.heavy = true;
+      else if (dist <= lightR) inp.light = true;
+      else inp[fwd] = true;
       return inp;
     }
     const oWhiff = o.state === 'attack' && o.movePhase === 2;
     const oVuln = oWhiff || o.state === 'stun' || o.state === 'frozen';
     if (oVuln && grounded) {
-      if (dist > 48) inp[fwd] = true;
-      else if (dist >= 26) inp.heavy = true;
-      else inp.light = true;
+      if (dist > heavyR + 4) inp[fwd] = true;
+      else if (dist >= 26 && dist <= heavyR) inp.heavy = true;
+      else if (dist <= lightR) inp.light = true;
+      else inp[fwd] = true;
       return inp;
     }
-    // 対空：跳び込みはPython（リーチ長）で削り落とす
-    if (o.y < GROUND - 10 && dist < 54 && o.vy > -1 && grounded) {
+    // 対空
+    if (o.y < GROUND - 10 && dist < 54 && o.vy > -1 && grounded && dist <= heavyR) {
       inp.heavy = true;
       return inp;
     }
-    // 起こし攻め：ダウン起身の無敵明けに強攻撃を重ねる
+    // 起こし攻め
     if (o.state === 'getup' && grounded) {
       if (dist > 46) inp[fwd] = true;
-      else if (o.stateT >= 5) inp.heavy = true;
+      else if (o.stateT >= 5 && dist <= heavyR) inp.heavy = true;
       else inp[back] = true;
       return inp;
     }
@@ -1668,8 +1842,8 @@ export class Battle {
       else if (dist < 34) inp[back] = true;
       return inp;
     }
-    // 攻め：Pythonの間合いを維持して置き poking、たまにテレポート混ぜ
-    if (dist > 48) {
+    // 攻め：間合いを維持して poke（リーチ外では撃たない）
+    if (dist > heavyR + 4) {
       if (dist > 105 && f.cooldown <= 0 && Math.random() < (d === 'extreme' ? 0.12 : 0.06)) {
         inp.special = true;
       } else if (dist > 110 && Math.random() < 0.06) {
@@ -1678,15 +1852,16 @@ export class Battle {
       } else inp[fwd] = true;
       return inp;
     }
-    if (dist < 22) {
+    if (dist < 20) {
       if (f.cooldown <= 0 && Math.random() < (d === 'extreme' ? 0.22 : 0.14)) inp.special = true;
-      else inp.light = true;
+      else if (dist <= lightR) inp.light = true;
+      else inp[back] = true;
       return inp;
     }
     const r = Math.random();
-    if (r < pokeHeavy) inp.heavy = true;
+    if (r < pokeHeavy && dist <= heavyR) inp.heavy = true;
     else if (r < pokeHeavy + 0.14) inp[fwd] = true;
-    else if (r < pokeHeavy + 0.22) inp.light = true;
+    else if (r < pokeHeavy + 0.22 && dist <= lightR) inp.light = true;
     else inp[back] = true;
     return inp;
   }
