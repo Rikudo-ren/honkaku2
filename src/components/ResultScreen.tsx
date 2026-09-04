@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CHARS } from '@/game/characters';
+import { CHARS, DIFFICULTY_LABELS } from '@/game/characters';
 import { HONSHITSU_QUOTES } from '@/game/quotes';
 import { Portrait } from '@/components/Portrait';
 import { audio } from '@/game/audio';
@@ -11,11 +11,12 @@ interface Props {
   onRematch: () => void;
   onSelect: () => void;
   onTitle: () => void;
+  willUnlockExtreme?: boolean;
 }
 
 const pick = <T,>(a: readonly T[]) => a[Math.floor(Math.random() * a.length)];
 
-export default function ResultScreen({ setup, result, onRematch, onSelect, onTitle }: Props) {
+export default function ResultScreen({ setup, result, onRematch, onSelect, onTitle, willUnlockExtreme }: Props) {
   const w = result.winner;
   const wId = w === 0 ? setup.p1 : setup.p2;
   const lId = w === 0 ? setup.p2 : setup.p1;
@@ -77,6 +78,18 @@ export default function ResultScreen({ setup, result, onRematch, onSelect, onTit
             {wd.name}
           </div>
           <div className="mt-1 text-amber-200">{wd.title}</div>
+          {(setup.mode === '1p' || setup.mode === 'cpu') && (
+            <div className="mt-2 text-sm text-slate-300">
+              対戦したCPU強さ：
+              <span
+                className={`ml-1 font-bold ${
+                  setup.difficulty === 'extreme' ? 'text-fuchsia-300' : setup.difficulty === 'hard' ? 'text-rose-300' : 'text-amber-200'
+                }`}
+              >
+                {DIFFICULTY_LABELS[setup.difficulty]}
+              </span>
+            </div>
+          )}
           <div className="mt-4 flex items-center gap-4 text-2xl">
             <span style={{ color: CHARS[setup.p1].color }}>{CHARS[setup.p1].name}</span>
             <span className="border-2 border-slate-600 bg-slate-950 px-3 py-1 text-3xl">
@@ -84,6 +97,13 @@ export default function ResultScreen({ setup, result, onRematch, onSelect, onTit
             </span>
             <span style={{ color: CHARS[setup.p2].color }}>{CHARS[setup.p2].name}</span>
           </div>
+          {willUnlockExtreme && (
+            <div className="mt-4 animate-pop border-2 border-fuchsia-400 bg-fuchsia-950/80 p-3 text-center">
+              <div className="text-xs tracking-widest text-fuchsia-300">NEW DIFFICULTY</div>
+              <div className="text-xl font-bold text-fuchsia-100">偏差値100 解禁間近…</div>
+              <div className="mt-1 text-xs text-slate-300">タイトルに戻ると豪華演出が流れます</div>
+            </div>
+          )}
           <div className="mt-5 border-2 border-slate-700 bg-slate-950/80 p-3 text-sm">
             <div className="text-xs text-emerald-300">匿名掲示板「ヘイカツ雑談スレ」に新着</div>
             <div className="mt-1 text-slate-200">
