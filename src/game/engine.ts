@@ -1470,18 +1470,20 @@ export class Battle {
     const f = this.f[s];
     const o = this.f[s === 0 ? 1 : 0];
     const ai = f.ai!;
-    // CPUが数理零を握ったときだけ別格のプレイングをする（能力値ではなく入力の質）
+    // 数理零は常にエリート脳。偏差値が高いほど反応フレームが詰まる
     if (f.id === 'rei') {
-      const react = this.opts.difficulty === 'hard' ? 1 : this.opts.difficulty === 'normal' ? 2 : 3;
+      const react =
+        this.opts.difficulty === 'extreme' ? 1 : this.opts.difficulty === 'hard' ? 1 : this.opts.difficulty === 'normal' ? 2 : 3;
       if (ai.held && (this.t + s) % react !== 0) return ai.held;
       const inp = this.reiBrain(s);
       ai.held = inp;
       return inp;
     }
     const cfg = {
-      easy: { every: 22, block: 0.12, agg: 0.45, special: 0.25, super: 0.35 },
-      normal: { every: 13, block: 0.35, agg: 0.7, special: 0.4, super: 0.6 },
-      hard: { every: 7, block: 0.6, agg: 0.88, special: 0.5, super: 0.85 },
+      easy: { every: 22, block: 0.12, agg: 0.45, special: 0.25, super: 0.35, proj: 0.4 },
+      normal: { every: 13, block: 0.35, agg: 0.7, special: 0.4, super: 0.6, proj: 0.55 },
+      hard: { every: 5, block: 0.88, agg: 0.92, special: 0.62, super: 0.9, proj: 0.82 },
+      extreme: { every: 3, block: 0.97, agg: 0.97, special: 0.78, super: 0.98, proj: 0.95 },
     }[this.opts.difficulty];
     const inp: InputState = { ...EMPTY_INPUT };
     const dist = Math.abs(o.x - f.x);
@@ -1490,21 +1492,40 @@ export class Battle {
     const projIncoming = this.projectiles.some((p) => p.owner !== s && !p.item && Math.sign(p.vx) === -fwd && Math.abs(p.x - f.x) < 90 && Math.abs(p.y - (f.y - 20)) < 40);
     const oppDown = o.state === 'down' || o.state === 'getup';
     const oppVulnerable = o.state === 'stun' || o.state === 'frozen' || (o.state === 'attack' && o.movePhase === 2);
+    // 高難易度はガードを毎フレーム優先（plan待ちにしない）
+    const hardish = this.opts.difficulty === 'hard' || this.opts.difficulty === 'extreme';
+    if (hardish && oppAttacking && dist < 58 && Math.random() < cfg.block) {
+      const backKey = fwd === 1 ? 'left' : 'right';
+      if (f.id === 'mie' && Math.random() < 0.45 && f.cooldown <= 0) {
+        inp.special = true;
+      } else {
+        inp[backKey] = true;
+      }
+      return inp;
+    }
+    if (hardish && projIncoming && Math.random() < cfg.proj) {
+      if (f.id === 'mie' && f.cooldown <= 0 && Math.random() < 0.7) inp.special = true;
+      else {
+        inp.up = true;
+        if (Math.random() < 0.4) inp[fwd === 1 ? 'right' : 'left'] = true;
+      }
+      return inp;
+    }
     ai.nextDecision--;
     if (ai.nextDecision <= 0) {
-      ai.nextDecision = cfg.every + Math.random() * cfg.every;
+      ai.nextDecision = cfg.every + Math.random() * (cfg.every * 0.6);
       ai.planT = 0;
       const r = Math.random();
       if (f.meter >= 100 && f.silence <= 0 && dist < 150 && r < cfg.super && !oppDown) ai.plan = 'super';
       else if (oppAttacking && dist < 60 && Math.random() < cfg.block) ai.plan = f.id === 'mie' && Math.random() < 0.5 && f.cooldown <= 0 ? 'special' : 'block';
-      else if (projIncoming && Math.random() < 0.55) ai.plan = f.id === 'mie' && f.cooldown <= 0 && Math.random() < 0.6 ? 'special' : 'jump';
+      else if (projIncoming && Math.random() < cfg.proj) ai.plan = f.id === 'mie' && f.cooldown <= 0 && Math.random() < 0.6 ? 'special' : 'jump';
       else if (oppDown) ai.plan = dist > 50 ? 'approach' : Math.random() < 0.5 ? 'wait' : 'retreat';
       else if (dist > 120) ai.plan = Math.random() < cfg.special && this.aiCanSpecial(f, dist, oppAttacking, projIncoming) ? 'special' : Math.random() < 0.2 ? 'jumpIn' : 'approach';
       else if (dist < 38) {
         const q = Math.random();
-        if (oppVulnerable) ai.plan = q < 0.6 ? 'heavy' : 'light';
-        else ai.plan = q < 0.4 * cfg.agg + 0.12 ? 'light' : q < 0.7 ? 'heavy' : q < 0.82 ? 'retreat' : q < 0.9 ? 'jumpIn' : 'wait';
-      } else ai.plan = Math.random() < 0.15 ? 'jumpIn' : Math.random() < 0.14 && this.aiCanSpecial(f, dist, oppAttacking, projIncoming) ? 'special' : 'approach';
+        if (oppVulnerable) ai.plan = q < 0.65 ? 'heavy' : 'light';
+        else ai.plan = q < 0.4 * cfg.agg + 0.12 ? 'light' : q < 0.72 ? 'heavy' : q < 0.84 ? 'retreat' : q < 0.92 ? 'jumpIn' : 'wait';
+      } else ai.plan = Math.random() < 0.15 ? 'jumpIn' : Math.random() < 0.16 && this.aiCanSpecial(f, dist, oppAttacking, projIncoming) ? 'special' : 'approach';
     }
     ai.planT++;
     const fwdKey = fwd === 1 ? 'right' : 'left';
@@ -1549,8 +1570,9 @@ export class Battle {
   }
 
   /**
-   * 数理零 専用エリートAI。
+   * 数理零 専用エリートAI（プレイスキルカンスト）。
    * 差し返し・対空・置き身逃げ・起こし攻め・コンボルートをフレーム単位で判断する。
+   * 偏差値85/100ではガード・反応・間合い管理がほぼ完璧。
    * 「面白いデータが出たので見てください」──勝率がそのデータである。
    */
   private reiBrain(s: Side): InputState {
@@ -1565,21 +1587,25 @@ export class Battle {
     const dist = Math.abs(o.x - f.x);
     const fwd: 'left' | 'right' = o.x > f.x ? 'right' : 'left';
     const back: 'left' | 'right' = fwd === 'right' ? 'left' : 'right';
-    const blockP = this.opts.difficulty === 'hard' ? 0.97 : this.opts.difficulty === 'normal' ? 0.92 : 0.8;
+    const d = this.opts.difficulty;
+    const blockP = d === 'extreme' ? 0.995 : d === 'hard' ? 0.985 : d === 'normal' ? 0.92 : 0.8;
+    const teleP = d === 'extreme' ? 0.38 : d === 'hard' ? 0.3 : 0.22;
+    const pokeHeavy = d === 'extreme' || d === 'hard' ? 0.72 : 0.55;
 
     // 超必殺：ゲージが溜まった瞬間に起動（ダウン中の相手には撃たない＝無駄撃ちしない）
-    if (f.meter >= 100 && f.silence <= 0 && o.state !== 'down' && o.state !== 'getup' && dist < 175) {
+    if (f.meter >= 100 && f.silence <= 0 && o.state !== 'down' && o.state !== 'getup' && dist < 185) {
       inp.super = true;
       return inp;
     }
     // 三峰の超必殺掴みは位相幾何学で抜けて背後から懲罰
-    if (o.state === 'super' && o.id === 'mitsumine' && dist < 80 && f.cooldown <= 0 && grounded) {
+    if (o.state === 'super' && o.id === 'mitsumine' && dist < 90 && f.cooldown <= 0 && grounded) {
       inp.special = true;
       return inp;
     }
     // 三重の「は？」構えには絶対に触らない（間合い管理）
     if (o.countering) {
-      if (dist < 62) inp[back] = true;
+      if (dist < 68) inp[back] = true;
+      else if (f.cooldown <= 0 && dist < 100 && Math.random() < 0.4) inp.special = true;
       else inp[fwd] = true;
       return inp;
     }
@@ -1588,77 +1614,79 @@ export class Battle {
       if (p.owner === s || p.item) return false;
       const dx = f.x - p.x;
       const closing = p.homing === s || (p.vx !== 0 && Math.sign(p.vx) === Math.sign(dx));
-      return closing && Math.abs(dx) < 110 && Math.abs(p.y - (f.y - 22)) < 50;
+      return closing && Math.abs(dx) < 120 && Math.abs(p.y - (f.y - 22)) < 55;
     });
     if (proj && grounded) {
       if (proj.ground) {
         inp.up = true;
         inp[fwd] = true;
-      } else if (f.cooldown <= 0 && Math.random() < 0.35) inp.special = true;
+      } else if (f.cooldown <= 0 && Math.random() < (d === 'extreme' ? 0.55 : 0.4)) inp.special = true;
       else {
         inp.up = true;
-        if (Math.random() < 0.5) inp[fwd] = true;
+        if (Math.random() < 0.55) inp[fwd] = true;
       }
       return inp;
     }
-    // 防御：相手の打撃発生を読み切ってガード、時々テレポート懲罰に切り替え
+    // 防御：相手の打撃発生を読み切ってガード、時々テレポート懲罰に切り替え（高難易度はほぼ必ずガード）
     const oMelee = o.state === 'attack' && !!o.move && o.move.kind === 'melee';
-    const oThreat = (oMelee && dist < 52 && Math.abs(o.y - f.y) < 34) || (o.y < GROUND - 8 && dist < 54 && o.vy > -1.2);
+    const oThreat = (oMelee && dist < 56 && Math.abs(o.y - f.y) < 36) || (o.y < GROUND - 8 && dist < 58 && o.vy > -1.2);
     if (oThreat && grounded) {
-      if (Math.random() > blockP) return inp; // ごく稀に被弾する（人間味の残り）
-      if (f.cooldown <= 0 && Math.random() < 0.22) inp.special = true;
+      if (Math.random() > blockP) return inp; // ごく稀に被弾（extremeはほぼ無し）
+      if (f.cooldown <= 0 && Math.random() < teleP) inp.special = true;
       else inp[back] = true;
       return inp;
     }
     // punish：相手のヒットストップ明けにはPythonの間合いで最大リターン
-    if (o.state === 'hurt' && dist < 42 && grounded) {
+    if (o.state === 'hurt' && dist < 46 && grounded) {
       if (o.stateT <= 6) inp.light = true;
-      else if (dist < 38) inp.heavy = true;
+      else if (dist < 40) inp.heavy = true;
       else inp.light = true;
       return inp;
     }
     const oWhiff = o.state === 'attack' && o.movePhase === 2;
     const oVuln = oWhiff || o.state === 'stun' || o.state === 'frozen';
     if (oVuln && grounded) {
-      if (dist > 46) inp[fwd] = true;
-      else if (dist >= 28) inp.heavy = true;
+      if (dist > 48) inp[fwd] = true;
+      else if (dist >= 26) inp.heavy = true;
       else inp.light = true;
       return inp;
     }
-    // 対空：跳び込みはPython（リーチ36）で削り落とす
-    if (o.y < GROUND - 10 && dist < 50 && o.vy > -1 && grounded) {
+    // 対空：跳び込みはPython（リーチ長）で削り落とす
+    if (o.y < GROUND - 10 && dist < 54 && o.vy > -1 && grounded) {
       inp.heavy = true;
       return inp;
     }
     // 起こし攻め：ダウン起身の無敵明けに強攻撃を重ねる
     if (o.state === 'getup' && grounded) {
-      if (dist > 44) inp[fwd] = true;
-      else if (o.stateT >= 6) inp.heavy = true;
+      if (dist > 46) inp[fwd] = true;
+      else if (o.stateT >= 5) inp.heavy = true;
       else inp[back] = true;
       return inp;
     }
     if (o.state === 'down') {
-      if (dist > 54) inp[fwd] = true;
-      else if (dist < 36) inp[back] = true;
+      if (dist > 52) inp[fwd] = true;
+      else if (dist < 34) inp[back] = true;
       return inp;
     }
-    // 攻め：Pythonの間合い（36〜44）を維持して置き poking、たまにテレポート混ぜ
-    if (dist > 46) {
-      if (dist > 110 && Math.random() < 0.05) {
+    // 攻め：Pythonの間合いを維持して置き poking、たまにテレポート混ぜ
+    if (dist > 48) {
+      if (dist > 105 && f.cooldown <= 0 && Math.random() < (d === 'extreme' ? 0.12 : 0.06)) {
+        inp.special = true;
+      } else if (dist > 110 && Math.random() < 0.06) {
         inp.up = true;
         inp[fwd] = true;
       } else inp[fwd] = true;
       return inp;
     }
-    if (dist < 24) {
-      if (f.cooldown <= 0 && Math.random() < 0.14) inp.special = true;
+    if (dist < 22) {
+      if (f.cooldown <= 0 && Math.random() < (d === 'extreme' ? 0.22 : 0.14)) inp.special = true;
       else inp.light = true;
       return inp;
     }
     const r = Math.random();
-    if (r < 0.55) inp.heavy = true;
-    else if (r < 0.75) inp[fwd] = true;
-    else if (r < 0.85) inp.light = true;
+    if (r < pokeHeavy) inp.heavy = true;
+    else if (r < pokeHeavy + 0.14) inp[fwd] = true;
+    else if (r < pokeHeavy + 0.22) inp.light = true;
     else inp[back] = true;
     return inp;
   }
