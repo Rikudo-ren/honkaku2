@@ -2,7 +2,7 @@ export type CharId = 'mie' | 'ryoma' | 'naito' | 'mitsumine' | 'terachi' | 'rei'
 export type Side = 0 | 1;
 export type Facing = 1 | -1;
 export type StageId = 'classroom' | 'lake' | 'sakura' | 'hawaii';
-export type Difficulty = 'easy' | 'normal' | 'hard';
+export type Difficulty = 'easy' | 'normal' | 'hard' | 'extreme';
 export type Mode = '1p' | '2p' | 'cpu';
 
 export interface InputState {
