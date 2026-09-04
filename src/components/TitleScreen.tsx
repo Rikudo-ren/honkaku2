@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CHAR_ORDER, DIFFICULTY_LABELS } from '@/game/characters';
+import { CHAR_ORDER, DIFFICULTY_HINT, DIFFICULTY_LABELS } from '@/game/characters';
 import { drawTitleScene } from '@/game/render';
 import { H, W } from '@/game/engine';
 import { HONSHITSU_QUOTES } from '@/game/quotes';
@@ -8,27 +8,39 @@ import type { Difficulty, Mode } from '@/game/types';
 
 interface Props {
   onStart: (mode: Mode, difficulty: Difficulty) => void;
+  extremeUnlocked: boolean;
+  justUnlocked?: boolean;
+  onUnlockSeen?: () => void;
 }
 
 const MENU: { id: Mode | 'diff' | 'help' | 'what'; label: string; sub: string }[] = [
   { id: '1p', label: '1P 対 CPU', sub: '理数科B組の日常に殴り込む' },
   { id: '2p', label: '2P 対戦', sub: '同じキーボードで殴り合う（内進 vs 理数科）' },
   { id: 'cpu', label: '自己対話モード', sub: 'CPU 対 CPU。自演じゃなくて自己対話だよ' },
-  { id: 'diff', label: 'CPUの偏差値', sub: '◀ ▶ で変更' },
+  { id: 'diff', label: 'CPUの偏差値', sub: '◀ ▶ で変更（対戦相手の強さ）' },
   { id: 'help', label: '操作説明', sub: 'キー配置と基本ルール' },
   { id: 'what', label: '✝本質✝とは', sub: '説明できたら✝本質✝じゃない' },
 ];
 
-const DIFFS: Difficulty[] = ['easy', 'normal', 'hard'];
-
-export default function TitleScreen({ onStart }: Props) {
+export default function TitleScreen({ onStart, extremeUnlocked, justUnlocked, onUnlockSeen }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [cursor, setCursor] = useState(0);
   const [diff, setDiff] = useState<Difficulty>('normal');
   const [modal, setModal] = useState<'help' | 'what' | null>(null);
   const [quoteIdx, setQuoteIdx] = useState(0);
-  const stateRef = useRef({ cursor, diff, modal });
-  stateRef.current = { cursor, diff, modal };
+  const [showUnlock, setShowUnlock] = useState(!!justUnlocked);
+  const stateRef = useRef({ cursor, diff, modal, extremeUnlocked });
+  stateRef.current = { cursor, diff, modal, extremeUnlocked };
+
+  const diffs: Difficulty[] = extremeUnlocked ? ['easy', 'normal', 'hard', 'extreme'] : ['easy', 'normal', 'hard'];
+
+  useEffect(() => {
+    if (justUnlocked) {
+      setShowUnlock(true);
+      audio.init();
+      audio.sfx('super');
+    }
+  }, [justUnlocked]);
 
   useEffect(() => {
     const cv = canvasRef.current;
@@ -60,7 +72,8 @@ export default function TitleScreen({ onStart }: Props) {
       setModal(item.id);
     } else if (item.id === 'diff') {
       const d = stateRef.current.diff;
-      setDiff(DIFFS[(DIFFS.indexOf(d) + 1) % DIFFS.length]);
+      const list = stateRef.current.extremeUnlocked ? (['easy', 'normal', 'hard', 'extreme'] as Difficulty[]) : (['easy', 'normal', 'hard'] as Difficulty[]);
+      setDiff(list[(list.indexOf(d) + 1) % list.length]);
       audio.sfx('move');
     } else {
       audio.sfx('confirm');
@@ -70,7 +83,17 @@ export default function TitleScreen({ onStart }: Props) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const { cursor: c, diff: d, modal: m } = stateRef.current;
+      if (showUnlock) {
+        if (['Enter', 'Space', 'Escape', 'KeyF', 'KeyG'].includes(e.code)) {
+          e.preventDefault();
+          setShowUnlock(false);
+          onUnlockSeen?.();
+          audio.sfx('confirm');
+        }
+        return;
+      }
+      const { cursor: c, diff: d, modal: m, extremeUnlocked: un } = stateRef.current;
+      const list = un ? (['easy', 'normal', 'hard', 'extreme'] as Difficulty[]) : (['easy', 'normal', 'hard'] as Difficulty[]);
       if (m) {
         if (e.code === 'Escape' || e.code === 'Enter' || e.code === 'Space' || e.code === 'KeyF' || e.code === 'KeyG') {
           setModal(null);
@@ -89,7 +112,7 @@ export default function TitleScreen({ onStart }: Props) {
       } else if (e.code === 'ArrowLeft' || e.code === 'KeyA' || e.code === 'ArrowRight' || e.code === 'KeyD') {
         if (MENU[c].id === 'diff') {
           const dir = e.code === 'ArrowLeft' || e.code === 'KeyA' ? -1 : 1;
-          setDiff(DIFFS[(DIFFS.indexOf(d) + dir + DIFFS.length) % DIFFS.length]);
+          setDiff(list[(list.indexOf(d) + dir + list.length) % list.length]);
           audio.init();
           audio.sfx('move');
         }
@@ -101,7 +124,7 @@ export default function TitleScreen({ onStart }: Props) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [showUnlock]);
 
   return (
     <div className="relative flex h-full min-h-screen w-full flex-col items-center justify-center overflow-hidden bg-[#07070f]">
@@ -120,7 +143,23 @@ export default function TitleScreen({ onStart }: Props) {
           <p className="mt-1 text-xs text-slate-300 md:text-sm">— THE FIGHTING GAME — カオス・コメディ全振り</p>
         </div>
 
-        <div className="mt-8 w-full max-w-md rounded border-4 border-slate-200/80 bg-slate-950/85 p-3 shadow-[6px_6px_0_#000] md:p-4">
+        {/* 現在のCPU偏差値を常に大きく表示 */}
+        <div
+          className={`mt-5 border-4 px-5 py-2 text-center shadow-[6px_6px_0_#000] ${
+            diff === 'extreme'
+              ? 'border-fuchsia-400 bg-fuchsia-950/90 text-fuchsia-100'
+              : diff === 'hard'
+                ? 'border-rose-400 bg-rose-950/90 text-rose-100'
+                : 'border-amber-300/80 bg-slate-950/90 text-amber-100'
+          }`}
+        >
+          <div className="text-[11px] tracking-widest opacity-80">対戦相手の強さ（CPU偏差値）</div>
+          <div className="pixel-text-shadow text-2xl font-bold md:text-3xl">{DIFFICULTY_LABELS[diff]}</div>
+          <div className="mt-0.5 text-xs opacity-90">{DIFFICULTY_HINT[diff]}</div>
+          {!extremeUnlocked && <div className="mt-1 text-[10px] text-slate-400">※偏差値85に勝つと偏差値100が解禁</div>}
+        </div>
+
+        <div className="mt-6 w-full max-w-md rounded border-4 border-slate-200/80 bg-slate-950/85 p-3 shadow-[6px_6px_0_#000] md:p-4">
           {MENU.map((m, i) => {
             const active = i === cursor;
             return (
@@ -171,6 +210,26 @@ export default function TitleScreen({ onStart }: Props) {
           </div>
         </div>
       )}
+
+      {/* 偏差値100解禁演出 */}
+      {showUnlock && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+          onClick={() => {
+            setShowUnlock(false);
+            onUnlockSeen?.();
+          }}
+        >
+          <div className="animate-pop max-w-lg border-4 border-fuchsia-400 bg-gradient-to-b from-fuchsia-950 via-slate-950 to-black p-8 text-center shadow-[0_0_40px_#e879f9,12px_12px_0_#000]">
+            <div className="text-xs tracking-[0.5em] text-fuchsia-300">NEW DIFFICULTY UNLOCKED</div>
+            <div className="pixel-text-shadow mt-3 text-5xl text-fuchsia-200 md:text-6xl">偏差値100</div>
+            <div className="mt-2 text-lg text-amber-200">解禁 ✝</div>
+            <p className="mt-4 text-sm text-slate-200">偏差値85の壁を越えた者だけが辿り着く領域。</p>
+            <p className="mt-1 text-xs text-slate-400">ガード・反応・間合い管理がほぼ完璧。数理零カンスト相当。</p>
+            <div className="mt-6 animate-blink text-sm text-fuchsia-200">Enter / クリックで閉じる</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -206,6 +265,7 @@ function HelpContent() {
         <li>攻撃を当てる／受けると✝本質✝ゲージが溜まる。MAXで超必殺技（立ち絵カットイン付き）。</li>
         <li>空中でも弱・強攻撃が出せる。三重の「は？」は当身。飛び道具も跳ね返す。</li>
         <li>試合中はランダムで✝本質✝イベントが発生する。ヘイカツが窓の外を見たら全員止まる。</li>
+        <li>CPU偏差値はタイトルで変更。偏差値85に勝つと偏差値100が解禁。</li>
         <li>Esc / P でポーズ。M でミュート。スマホはタッチボタン対応（1Pのみ）。</li>
       </ul>
     </div>
