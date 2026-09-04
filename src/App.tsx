@@ -14,8 +14,25 @@ type Screen = 'loading' | 'title' | 'select' | 'versus' | 'battle' | 'result';
 
 const randomStage = (): StageId => STAGES[Math.floor(Math.random() * STAGES.length)].id;
 
-// ローディング画面の最短表示時間（ms）。処理が一瞬で終わっても一瞬で消えないようにする。
+const UNLOCK_KEY = 'honkaku_extreme_unlocked';
+
 const MIN_LOADING_MS = 500;
+
+function loadUnlocked(): boolean {
+  try {
+    return localStorage.getItem(UNLOCK_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveUnlocked() {
+  try {
+    localStorage.setItem(UNLOCK_KEY, '1');
+  } catch {
+    /* ignore */
+  }
+}
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('loading');
@@ -24,10 +41,14 @@ export default function App() {
   const [result, setResult] = useState<{ winner: Side; wins: [number, number] } | null>(null);
   const [battleKey, setBattleKey] = useState(0);
   const [muted, setMuted] = useState(false);
+  const [extremeUnlocked, setExtremeUnlocked] = useState(false);
+  const [justUnlocked, setJustUnlocked] = useState(false);
   const bgmRef = useRef<'title' | 'battle'>('title');
 
-  // 起動時：立ち絵の白背景透過処理（Portrait.tsx）をここで実行し、
-  // 完了してからタイトル画面へ遷移する。
+  useEffect(() => {
+    setExtremeUnlocked(loadUnlocked());
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const started = performance.now();
@@ -49,7 +70,6 @@ export default function App() {
     };
   }, []);
 
-  // audio unlock on first gesture
   useEffect(() => {
     const unlock = () => {
       audio.init();
@@ -103,14 +123,55 @@ export default function App() {
     setScreen('versus');
   }, []);
 
+  const tryUnlock = useCallback(() => {
+    if (result && result.winner === 0 && setup.mode === '1p' && setup.difficulty === 'hard' && !extremeUnlocked) {
+      saveUnlocked();
+      setExtremeUnlocked(true);
+      setJustUnlocked(true);
+      return true;
+    }
+    return false;
+  }, [result, setup, extremeUnlocked]);
+
+  const handleResultToTitle = useCallback(() => {
+    tryUnlock();
+    setScreen('title');
+  }, [tryUnlock]);
+
+  const handleResultToSelect = useCallback(() => {
+    if (tryUnlock()) {
+      setScreen('title');
+      return;
+    }
+    setScreen('select');
+  }, [tryUnlock]);
+
   return (
     <div className="min-h-screen w-full bg-[#05050c] text-slate-100">
       {screen === 'loading' && <LoadingScreen progress={loadProgress} />}
-      {screen === 'title' && <TitleScreen onStart={start} />}
-      {screen === 'select' && <CharacterSelect mode={setup.mode} onDone={chosen} onBack={() => setScreen('title')} />}
+      {screen === 'title' && (
+        <TitleScreen
+          onStart={start}
+          extremeUnlocked={extremeUnlocked}
+          justUnlocked={justUnlocked}
+          onUnlockSeen={() => setJustUnlocked(false)}
+        />
+      )}
+      {screen === 'select' && (
+        <CharacterSelect mode={setup.mode} difficulty={setup.difficulty} onDone={chosen} onBack={() => setScreen('title')} />
+      )}
       {screen === 'versus' && <VersusScreen setup={setup} onDone={toBattle} />}
       {screen === 'battle' && <BattleScreen key={battleKey} setup={setup} onEnd={onEnd} onQuit={(to) => setScreen(to)} />}
-      {screen === 'result' && result && <ResultScreen setup={setup} result={result} onRematch={rematch} onSelect={() => setScreen('select')} onTitle={() => setScreen('title')} />}
+      {screen === 'result' && result && (
+        <ResultScreen
+          setup={setup}
+          result={result}
+          onRematch={rematch}
+          onSelect={handleResultToSelect}
+          onTitle={handleResultToTitle}
+          willUnlockExtreme={result.winner === 0 && setup.mode === '1p' && setup.difficulty === 'hard' && !extremeUnlocked}
+        />
+      )}
       {screen !== 'loading' && (
         <button
           className="fixed right-2 top-2 z-50 border-2 border-slate-600 bg-black/60 px-2 py-0.5 text-xs text-slate-300 hover:bg-slate-800"
