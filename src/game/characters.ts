@@ -573,7 +573,22 @@ export const STAGES: StageDef[] = [
 export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
   easy: '偏差値50',
   normal: '偏差値60（理数科）',
-  hard: '偏差値85（数理零）',
+  hard: '偏差値85（ガチ）',
+  extreme: '偏差値100（解禁）',
+};
+
+export const DIFFICULTY_SHORT: Record<Difficulty, string> = {
+  easy: '偏差値50',
+  normal: '偏差値60',
+  hard: '偏差値85',
+  extreme: '偏差値100',
+};
+
+export const DIFFICULTY_HINT: Record<Difficulty, string> = {
+  easy: 'ガード甘い・反応遅い',
+  normal: '標準的な理数科レベル',
+  hard: 'ガードガチ・反応速い',
+  extreme: '数理零カンスト相当・ほぼ完璧',
 };
 
 // 特殊な試合前の掛け合い（idの辞書順ペア → [先に言う側のid, セリフ, 返す側のセリフ]）
