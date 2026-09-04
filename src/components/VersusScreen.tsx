@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { CHARS, INTRO_PAIRS, STAGES, pairKey } from '@/game/characters';
+import { CHARS, DIFFICULTY_LABELS, INTRO_PAIRS, STAGES, pairKey } from '@/game/characters';
 import { LOADING_TIPS } from '@/game/quotes';
 import { Portrait } from '@/components/Portrait';
 import type { Setup } from '@/game/types';
@@ -17,6 +17,9 @@ export default function VersusScreen({ setup, onDone }: Props) {
   const pair = INTRO_PAIRS[pairKey(a.id, b.id)];
   const p2Label = setup.mode === '2p' ? '2P' : 'CPU';
   const p1Label = setup.mode === 'cpu' ? 'CPU' : '1P';
+  const showDiff = setup.mode === '1p' || setup.mode === 'cpu';
+  const diffColor =
+    setup.difficulty === 'extreme' ? 'text-fuchsia-300 border-fuchsia-400' : setup.difficulty === 'hard' ? 'text-rose-300 border-rose-400' : 'text-amber-200 border-amber-400';
 
   useEffect(() => {
     const t = window.setTimeout(onDone, 3200);
@@ -53,10 +56,20 @@ export default function VersusScreen({ setup, onDone }: Props) {
           </div>
           <div className="pixel-text-shadow text-3xl text-white md:text-6xl">{b.name}</div>
           <div className="mt-1 inline-block bg-slate-900 px-2 py-0.5 text-xs text-white md:text-base">{b.title}</div>
+          {showDiff && (
+            <div className={`mt-2 inline-block border-2 bg-black/80 px-2 py-0.5 text-sm font-bold md:text-base ${diffColor}`}>
+              {DIFFICULTY_LABELS[setup.difficulty]}
+            </div>
+          )}
         </div>
       </div>
       <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 animate-vs-pop">
         <div className="pixel-text-shadow text-7xl text-amber-300 md:text-9xl">VS</div>
+        {showDiff && (
+          <div className={`mx-auto mt-1 w-fit border-2 bg-black/85 px-3 py-1 text-center text-sm font-bold md:text-lg ${diffColor}`}>
+            CPU {DIFFICULTY_LABELS[setup.difficulty]}
+          </div>
+        )}
         {pair && (
           <div className="mt-2 whitespace-nowrap bg-black/80 px-3 py-1 text-center text-xs text-amber-100 md:text-base">
             「{pair.a}」「{pair.b}」{pair.note ?? ''}
